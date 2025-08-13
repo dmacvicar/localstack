@@ -49,6 +49,24 @@ class DownloadInstaller(ExecutableInstaller):
     def _get_download_url(self) -> str:
         raise NotImplementedError()
 
+    def _get_checksum(self) -> Optional[str]:
+        """
+        Override to provide explicit checksum for this package version.
+        This is checked first before trying checksum URL.
+
+        :return: Expected checksum string, or None if not available
+        """
+        return None
+
+    def _get_checksum_url(self) -> Optional[str]:
+        """
+        Override to provide checksum URL for verification.
+        This is checked second if _get_checksum() returns None.
+
+        :return: URL to checksum file, or None if not available
+        """
+        return None
+
     def _get_install_marker_path(self, install_dir: str) -> str:
         url = self._get_download_url()
         binary_name = os.path.basename(url)
@@ -57,9 +75,22 @@ class DownloadInstaller(ExecutableInstaller):
     def _install(self, target: InstallTarget) -> None:
         target_directory = self._get_install_dir(target)
         mkdir(target_directory)
+
         download_url = self._get_download_url()
         target_path = self._get_install_marker_path(target_directory)
-        download(download_url, target_path)
+        filename = os.path.basename(download_url)
+
+        # Resolve checksum from explicit checksum or checksum URL
+        expected_checksum = self._get_checksum()
+
+        if not expected_checksum:
+            checksum_url = self._get_checksum_url()
+            if checksum_url:
+                from ..utils.checksum import find_checksum_in_checksum_url
+
+                expected_checksum = find_checksum_in_checksum_url(filename, checksum_url)
+
+        download(download_url, target_path, expected_checksum=expected_checksum)
 
 
 class ArchiveDownloadAndExtractInstaller(ExecutableInstaller):
@@ -83,11 +114,20 @@ class ArchiveDownloadAndExtractInstaller(ExecutableInstaller):
     def _get_download_url(self) -> str:
         raise NotImplementedError()
 
+    def _get_checksum(self) -> str | None:
+        """
+        Override to provide explicit checksum for this package version.
+        This is checked first before trying checksum URL.
+
+        :return: Expected checksum string, or None if not available
+        """
+        return None
+
     def _get_checksum_url(self) -> str | None:
         """
-        Checksum URL for the archive. This is used to verify the integrity of the downloaded archive.
-        This method can be implemented by subclasses to provide the correct URL for the checksum file.
-        If not implemented, checksum verification will be skipped.
+        Override to provide checksum URL for verification.
+        This is checked second if _get_checksum() returns None.
+        This is used to verify the integrity of the downloaded archive.
 
         :return: URL to the checksum file for the archive, or None if not available.
         """
@@ -154,8 +194,15 @@ class ArchiveDownloadAndExtractInstaller(ExecutableInstaller):
         archive_name = os.path.basename(download_url)
         archive_path = os.path.join(config.dirs.tmp, archive_name)
 
-        # Get checksum info if available
-        checksum_url = self._get_checksum_url()
+        # Resolve checksum from explicit checksum or checksum URL
+        expected_checksum = self._get_checksum()
+
+        if not expected_checksum:
+            checksum_url = self._get_checksum_url()
+            if checksum_url:
+                from ..utils.checksum import find_checksum_in_checksum_url
+
+                expected_checksum = find_checksum_in_checksum_url(archive_name, checksum_url)
 
         try:
             download_and_extract(
@@ -163,7 +210,7 @@ class ArchiveDownloadAndExtractInstaller(ExecutableInstaller):
                 retries=3,
                 tmp_archive=archive_path,
                 target_dir=target_directory,
-                checksum_url=checksum_url,
+                expected_checksum=expected_checksum,
             )
             self._handle_single_directory_extraction(target_directory)
         finally:

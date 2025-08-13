@@ -181,10 +181,12 @@ def download(
     timeout: float = None,
     request_headers: Optional[dict] = None,
     quiet: bool = False,
+    expected_checksum: Optional[str] = None,
 ) -> None:
     """Downloads file at url to the given path. Raises TimeoutError if the optional timeout (in secs) is reached.
 
     If `quiet` is passed, do not log any status messages. Error messages are still logged.
+    If `expected_checksum` is provided, the downloaded file will be verified against it.
     """
 
     # make sure we're creating a new session here to enable parallel file downloads
@@ -278,6 +280,16 @@ def download(
                 r.status_code,
                 total_downloaded / 1024,
             )
+
+        # Verify checksum if provided
+        if expected_checksum:
+            from .checksum import verify_file_checksum
+
+            try:
+                verify_file_checksum(path, expected_checksum)
+            except Exception as e:
+                os.remove(path)
+                raise e
     except requests.exceptions.ReadTimeout as e:
         raise TimeoutError(f"Timeout ({timeout}) reached on download: {url} - {e}")
     finally:

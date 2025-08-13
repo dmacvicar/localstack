@@ -104,6 +104,33 @@ class BSDFormat(ChecksumFormat):
         return checksums
 
 
+class MavenSingleFileChecksumFormat(ChecksumFormat):
+    """
+    Handles Maven-style single checksum files (.sha1, .sha256, .md5).
+
+    Format: Just a single checksum value on one line:
+    * ``abcdef123456...``
+    """
+
+    def can_parse(self, content: str) -> bool:
+        content = content.strip()
+        lines = content.split("\n")
+        if len(lines) != 1:  # Must be exactly one line
+            return False
+
+        line = lines[0].strip()
+        # Match: only hex string, no filename
+        return bool(re.match(r"^[a-fA-F0-9]{32,128}$", line))
+
+    def parse(self, content: str) -> dict[str, str]:
+        content = content.strip()
+        line = content.split("\n")[0].strip()
+
+        if re.match(r"^[a-fA-F0-9]{32,128}$", line):
+            return {"__SINGLE_FILE__": line.lower()}
+        return {}
+
+
 class ApacheBSDFormat(ChecksumFormat):
     """
     Handles Apache's BSD-style format with split checksums.
@@ -161,9 +188,10 @@ class ApacheBSDFormat(ChecksumFormat):
 class ChecksumParser:
     """Main parser that tries different checksum formats."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize parser with available format parsers."""
         self.formats = [
+            MavenSingleFileChecksumFormat(),  # Try Maven single file first
             StandardFormat(),
             BSDFormat(),
             ApacheBSDFormat(),
@@ -189,6 +217,9 @@ def parse_checksum_file_from_url(checksum_url: str) -> dict[str, str]:
     """
     Parse a SHA checksum file from a URL using multiple format parsers.
 
+    DEPRECATED: This function contains download logic and should not be used in new code.
+    Use the installer checksum resolution methods instead.
+
     :param checksum_url: URL of the checksum file
     :return: Dictionary mapping filenames to checksums
     """
@@ -209,12 +240,32 @@ def parse_checksum_file_from_url(checksum_url: str) -> dict[str, str]:
         rm_rf(checksum_path)
 
 
+def detect_algorithm_from_checksum(checksum: str) -> str:
+    """
+    Detect hash algorithm based on checksum length.
+
+    :param checksum: The checksum string
+    :return: Algorithm name
+    """
+    checksum_length = len(checksum)
+    if checksum_length == 32:
+        return "md5"
+    elif checksum_length == 40:
+        return "sha1"
+    elif checksum_length == 64:
+        return "sha256"
+    elif checksum_length == 128:
+        return "sha512"
+    else:
+        raise ChecksumException(f"Unsupported checksum length: {checksum_length}")
+
+
 def calculate_file_checksum(file_path: str, algorithm: str = "sha256") -> str:
     """
     Calculate checksum of a local file.
 
     :param file_path: Path to the file
-    :param algorithm: Hash algorithm to use
+    :param algorithm: Hash algorithm to use (defaults to 'sha256')
     :return: Calculated checksum as hexadecimal string
 
     note: Supported algorithms: 'md5', 'sha1', 'sha256', 'sha512'
@@ -229,85 +280,93 @@ def calculate_file_checksum(file_path: str, algorithm: str = "sha256") -> str:
     return hash_func.hexdigest()
 
 
-def verify_local_file_with_checksum_url(file_path: str, checksum_url: str, filename=None) -> bool:
+def verify_file_checksum(file_path: str, expected_checksum: str) -> bool:
     """
-    Verify a local file against checksums from an online checksum file.
+    Verify a local file against an expected checksum.
+    Algorithm is automatically detected from checksum length.
 
     :param file_path: Path to the local file to verify
-    :param checksum_url: URL of the checksum file
-    :param filename: Filename to look for in checksum file (defaults to basename of file_path)
-    :return: True if verification succeeds, False otherwise
-
-    note: The algorithm is automatically detected based on checksum length:
-
-       * 32 characters: MD5
-       * 40 characters: SHA1
-       * 64 characters: SHA256
-       * 128 characters: SHA512
+    :param expected_checksum: Expected checksum
+    :return: True if verification succeeds
+    :raises ChecksumException: If checksum verification fails
     """
-    # Get checksums from URL
-    LOG.debug("Fetching checksums from %s...", checksum_url)
-    checksums = parse_checksum_file_from_url(checksum_url)
-
-    if not checksums:
-        raise ChecksumException(f"No checksums found in {checksum_url}")
-
-    # Determine filename to look for
-    if filename is None:
-        filename = os.path.basename(file_path)
-
-    # Find checksum for our file
-    if filename not in checksums:
-        # Try with different path variations
-        possible_names = [
-            filename,
-            os.path.basename(filename),  # just filename without path
-            filename.replace("\\", "/"),  # Unix-style paths
-            filename.replace("/", "\\"),  # Windows-style paths
-        ]
-
-        found = False
-        for name in possible_names:
-            if name in checksums:
-                filename = name
-                found = True
-                break
-
-        if not found:
-            raise ChecksumException(f"Checksum for {filename} not found in {checksum_url}")
-
-    expected_checksum = checksums[filename]
-
-    # Detect algorithm based on checksum length
-    checksum_length = len(expected_checksum)
-    if checksum_length == 32:
-        algorithm = "md5"
-    elif checksum_length == 40:
-        algorithm = "sha1"
-    elif checksum_length == 64:
-        algorithm = "sha256"
-    elif checksum_length == 128:
-        algorithm = "sha512"
-    else:
-        raise ChecksumException(f"Unsupported checksum length: {checksum_length}")
-
-    # Calculate checksum of local file
-    LOG.debug("Calculating %s checksum of %s...", algorithm, file_path)
+    algorithm = detect_algorithm_from_checksum(expected_checksum)
     calculated_checksum = calculate_file_checksum(file_path, algorithm)
 
-    is_valid = calculated_checksum == expected_checksum.lower()
-
-    if not is_valid:
-        LOG.error(
-            "Checksum mismatch for %s: calculated %s, expected %s",
-            file_path,
-            calculated_checksum,
-            expected_checksum,
-        )
+    if calculated_checksum != expected_checksum.lower():
         raise ChecksumException(
             f"Checksum mismatch for {file_path}: calculated {calculated_checksum}, expected {expected_checksum}"
         )
-    LOG.debug("Checksum verification successful for %s", file_path)
 
-    # Compare checksums
-    return calculated_checksum == expected_checksum.lower()
+    return True
+
+
+def find_checksum_in_checksum_url(filename: str, checksum_url: str) -> str | None:
+    """
+    Find checksum for the given filename from an online checksum file.
+
+    :param filename: The filename to find checksum for
+    :param checksum_url: URL of the checksum file
+    :return: Resolved checksum string, or None if not found
+    """
+    try:
+        import tempfile
+
+        from localstack.utils.files import load_file, rm_rf
+
+        checksum_name = os.path.basename(checksum_url)
+        checksum_path = os.path.join(tempfile.gettempdir(), checksum_name)
+
+        try:
+            # Import here to avoid circular dependency
+            from localstack.utils.http import download
+
+            LOG.debug("Fetching checksums from %s...", checksum_url)
+            download(checksum_url, checksum_path)
+            checksum_content = load_file(checksum_path)
+
+            if not checksum_content:
+                LOG.warning("Empty checksum file from %s", checksum_url)
+                return None
+
+            parser = ChecksumParser()
+            checksums = parser.parse(checksum_content)
+
+            if not checksums:
+                LOG.warning("No checksums found in %s", checksum_url)
+                return None
+
+            # Single file format (like Maven)
+            if "__SINGLE_FILE__" in checksums:
+                return checksums["__SINGLE_FILE__"]
+
+            if filename in checksums:
+                return checksums[filename]
+
+            # Try with different path variations
+            possible_names = [
+                filename,
+                os.path.basename(filename),  # just filename without path
+                filename.replace("\\", "/"),  # Unix-style paths
+                filename.replace("/", "\\"),  # Windows-style paths
+            ]
+
+            for name in possible_names:
+                if name in checksums:
+                    return checksums[name]
+
+            # If still not found, try basename matching against all checksums
+            basename = os.path.basename(filename)
+            for file_in_checksum, checksum in checksums.items():
+                if os.path.basename(file_in_checksum) == basename:
+                    return checksum
+
+            LOG.warning("Checksum for %s not found in %s", filename, checksum_url)
+            return None
+
+        finally:
+            rm_rf(checksum_path)
+
+    except Exception as e:
+        LOG.warning("Failed to resolve checksum from %s: %s", checksum_url, e)
+        return None

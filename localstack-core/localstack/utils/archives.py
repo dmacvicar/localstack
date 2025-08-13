@@ -15,7 +15,6 @@ from localstack.utils.files import load_file, mkdir, new_tmp_file, rm_rf, save_f
 from localstack.utils.http import download
 from localstack.utils.run import run
 
-from .checksum import verify_local_file_with_checksum_url
 from .run import is_command_available
 from .strings import truncate
 
@@ -177,12 +176,12 @@ def download_and_extract(
     retries: Optional[int] = 0,
     sleep: Optional[int] = 3,
     tmp_archive: Optional[str] = None,
-    checksum_url: Optional[str] = None,
+    expected_checksum: Optional[str] = None,
 ) -> None:
     """
     Download and extract an archive to a target directory with optional checksum verification.
 
-    Checksum verification is only performed if a `checksum_url` is provided.
+    Checksum verification is only performed if `expected_checksum` is provided.
     Else, the archive is downloaded and extracted without verification.
 
     :param archive_url: URL of the archive to download
@@ -190,7 +189,7 @@ def download_and_extract(
     :param retries: Number of download retries (default: 0)
     :param sleep: Sleep time between retries in seconds (default: 3)
     :param tmp_archive: Optional path for the temporary archive file
-    :param checksum_url: Optional URL of the checksum file for verification
+    :param expected_checksum: Optional expected checksum for verification
     :return: None
     """
     mkdir(target_dir)
@@ -203,7 +202,7 @@ def download_and_extract(
 
         for i in range(retries + 1):
             try:
-                download(archive_url, tmp_archive)
+                download(archive_url, tmp_archive, expected_checksum=expected_checksum)
                 break
             except Exception as e:
                 LOG.warning(
@@ -219,19 +218,6 @@ def download_and_extract(
     # if the temporary file we created above hasn't been replaced, we assume failure
     if os.path.getsize(tmp_archive) <= 0:
         raise Exception("Failed to download archive from %s: . Retries exhausted", archive_url)
-
-    # Verify checksum if provided
-    if checksum_url:
-        LOG.info("Verifying archive integrity...")
-        try:
-            verify_local_file_with_checksum_url(
-                file_path=tmp_archive,
-                checksum_url=checksum_url,
-            )
-        except Exception as e:
-            # clean up the corrupted download
-            rm_rf(tmp_archive)
-            raise e
 
     if ext == ".zip":
         unzip(tmp_archive, target_dir)
@@ -250,14 +236,14 @@ def download_and_extract_with_retry(
     archive_url,
     tmp_archive,
     target_dir,
-    checksum_url: Optional[str] = None,
+    expected_checksum: Optional[str] = None,
 ):
     try:
         download_and_extract(
             archive_url,
             target_dir,
             tmp_archive=tmp_archive,
-            checksum_url=checksum_url,
+            expected_checksum=expected_checksum,
         )
     except Exception as e:
         # try deleting and re-downloading the zip file
@@ -267,5 +253,5 @@ def download_and_extract_with_retry(
             archive_url,
             target_dir,
             tmp_archive=tmp_archive,
-            checksum_url=checksum_url,
+            expected_checksum=expected_checksum,
         )
