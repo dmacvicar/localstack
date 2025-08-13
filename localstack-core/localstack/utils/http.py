@@ -2,6 +2,7 @@ import logging
 import math
 import os
 import re
+import shutil
 from typing import Dict, Optional, Union
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
@@ -17,6 +18,39 @@ DOWNLOAD_CHUNK_SIZE = 1024 * 1024
 
 ACCEPT = "accept"
 LOG = logging.getLogger(__name__)
+
+
+class FileCache:
+    """Simple file-based cache using checksum subdirectories and original filenames."""
+
+    def __init__(self):
+        self.cache_dir = os.environ.get("LOCALSTACK_LPM_CACHE_DIR")
+
+    def is_cache_available(self) -> bool:
+        return self.cache_dir is not None and self.cache_dir.strip() != ""
+
+    def get_cached_file(self, checksum: str, filename: str) -> str | None:
+        if not self.is_cache_available() or not checksum:
+            return None
+
+        cache_path = os.path.join(self.cache_dir, checksum, filename)
+        if os.path.exists(cache_path):
+            return cache_path
+        return None
+
+    def cache_file(self, source_path: str, checksum: str, filename: str) -> None:
+        if not self.is_cache_available() or not checksum:
+            return
+
+        cache_subdir = os.path.join(self.cache_dir, checksum)
+        cache_path = os.path.join(cache_subdir, filename)
+
+        try:
+            os.makedirs(cache_subdir, exist_ok=True)
+            shutil.copy2(source_path, cache_path)
+            LOG.debug("Cached file %s to %s", filename, cache_path)
+        except Exception as e:
+            LOG.warning("Failed to cache file %s: %s", filename, e)
 
 
 def uses_chunked_encoding(response):
@@ -187,7 +221,21 @@ def download(
 
     If `quiet` is passed, do not log any status messages. Error messages are still logged.
     If `expected_checksum` is provided, the downloaded file will be verified against it.
+    Content-based caching is used when expected_checksum is provided and LOCALSTACK_LPM_CACHE_DIR is set.
     """
+
+    # Check cache first if we have a checksum
+    cache = FileCache()
+    filename = os.path.basename(path)
+
+    if expected_checksum and cache.is_cache_available():
+        cached_file = cache.get_cached_file(expected_checksum, filename)
+        if cached_file:
+            if not quiet:
+                LOG.debug("Using cached file for %s from %s", url, cached_file)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            shutil.copy2(cached_file, path)
+            return
 
     # make sure we're creating a new session here to enable parallel file downloads
     s = requests.Session()
@@ -288,6 +336,11 @@ def download(
             try:
                 verify_file_checksum(path, expected_checksum)
                 LOG.debug("Validated %s against checksum %s", url, expected_checksum)
+
+                # Cache the file after successful verification
+                if cache.is_cache_available():
+                    cache.cache_file(path, expected_checksum, filename)
+
             except Exception as e:
                 os.remove(path)
                 raise e
