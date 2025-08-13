@@ -414,6 +414,18 @@ class MavenDownloadInstaller(DownloadInstaller):
         group_id_path = self.group_id.replace(".", "/")
         return f"{MAVEN_REPO_URL}/{group_id_path}/{self.artifact_id}/{self.version}/{self.artifact_id}-{self.version}.jar"
 
+    def _get_checksum_url(self) -> str | None:
+        """
+        Get the checksum URL for Maven artifacts.
+        Maven repositories typically provide SHA-1 checksums in .sha1 files.
+        We prioritize SHA-1 as it's the most commonly available.
+
+        :return: URL to the SHA-1 checksum file
+        """
+        group_id_path = self.group_id.replace(".", "/")
+        jar_filename = f"{self.artifact_id}-{self.version}.jar"
+        return f"{MAVEN_REPO_URL}/{group_id_path}/{self.artifact_id}/{self.version}/{jar_filename}.sha1"
+
     def _get_install_dir(self, target: InstallTarget) -> str:
         """Allow to overwrite the default installation directory.
         This enables downloading transitive dependencies into the same directory.
