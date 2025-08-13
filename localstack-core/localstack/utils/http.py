@@ -287,6 +287,7 @@ def download(
 
             try:
                 verify_file_checksum(path, expected_checksum)
+                LOG.debug("Validated %s against checksum %s", url, expected_checksum)
             except Exception as e:
                 os.remove(path)
                 raise e
