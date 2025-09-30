@@ -113,6 +113,8 @@ class ServiceRequestRouter(Handler):
             chain.stop()
             return
 
+        LOG.debug(context)
+
         handler(chain, context, response)
 
     def add_handler(self, key: ServiceOperation, handler: Handler):

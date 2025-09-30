@@ -3,6 +3,7 @@ from localstack.aws import handlers
 from localstack.aws.api import RequestContext
 from localstack.aws.chain import HandlerChain
 from localstack.aws.handlers.metric_handler import MetricHandler
+from localstack.aws.handlers.request_recorder import RequestPersistenceManager
 from localstack.aws.handlers.service_plugin import ServiceLoader, ServiceLoaderForDataPlane
 from localstack.http.trace import TracingHandlerChain
 from localstack.services.plugins import SERVICE_PLUGINS, ServiceManager, ServicePluginManager
@@ -22,39 +23,50 @@ class LocalstackAwsGateway(Gateway):
         self.service_request_router = ServiceRequestRouter()
         # lazy-loads services into the router
         load_service = ServiceLoader(self.service_manager, self.service_request_router)
+        self.service_loader = load_service
         load_service_for_data_plane = ServiceLoaderForDataPlane(load_service)
 
         metric_collector = MetricHandler()
-        # the main request handler chain
-        self.request_handlers.extend(
+        request_persistence = RequestPersistenceManager()
+        recorder_handler = request_persistence.build_recorder()
+
+        request_handlers = [
+            handlers.add_internal_request_params,
+            handlers.handle_runtime_shutdown,
+            metric_collector.create_metric_handler_item,
+            load_service_for_data_plane,
+            handlers.preprocess_request,
+            handlers.enforce_cors,
+            handlers.content_decoder,  # depends on preprocess_request for the S3 service
+            handlers.validate_request_schema,  # validate request schema for public LS endpoints
+            handlers.serve_localstack_resources,  # try to serve endpoints in /_localstack
+            handlers.serve_edge_router_rules,
+            # start aws handler chain
+            handlers.parse_service_name,
+            handlers.parse_pre_signed_url_request,
+            handlers.inject_auth_header_if_missing,
+            handlers.add_region_from_header,
+            handlers.rewrite_region,
+            handlers.add_account_id,
+            handlers.parse_trace_context,
+            handlers.parse_service_request,
+            metric_collector.record_parsed_request,
+            handlers.serve_custom_service_request_handlers,
+            load_service,  # once we have the service request we can make sure we load the service
+        ]
+
+        if recorder_handler:
+            request_handlers.append(recorder_handler)
+
+        request_handlers.extend(
             [
-                handlers.add_internal_request_params,
-                handlers.handle_runtime_shutdown,
-                metric_collector.create_metric_handler_item,
-                load_service_for_data_plane,
-                handlers.preprocess_request,
-                handlers.enforce_cors,
-                handlers.content_decoder,  # depends on preprocess_request for the S3 service
-                handlers.validate_request_schema,  # validate request schema for public LS endpoints
-                handlers.serve_localstack_resources,  # try to serve endpoints in /_localstack
-                handlers.serve_edge_router_rules,
-                # start aws handler chain
-                handlers.parse_service_name,
-                handlers.parse_pre_signed_url_request,
-                handlers.inject_auth_header_if_missing,
-                handlers.add_region_from_header,
-                handlers.rewrite_region,
-                handlers.add_account_id,
-                handlers.parse_trace_context,
-                handlers.parse_service_request,
-                metric_collector.record_parsed_request,
-                handlers.serve_custom_service_request_handlers,
-                load_service,  # once we have the service request we can make sure we load the service
                 self.service_request_router,  # once we know the service is loaded we can route the request
                 # if the chain is still running, set an empty response
                 EmptyResponseHandler(404, b'{"message": "Not Found"}'),
             ]
         )
+
+        self.request_handlers.extend(request_handlers)
 
         # exception handlers in the chain
         self.exception_handlers.extend(
@@ -87,6 +99,13 @@ class LocalstackAwsGateway(Gateway):
                 handlers.run_custom_finalizers,
             ]
         )
+
+        self.request_persistence = request_persistence
+        replayer = request_persistence.build_replayer(
+            self.service_loader, self.service_request_router, self.context_class
+        )
+        if replayer:
+            replayer.replay_all()
 
     def new_chain(self) -> HandlerChain:
         if config.DEBUG_HANDLER_CHAIN:

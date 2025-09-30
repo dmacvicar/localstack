@@ -780,6 +780,12 @@ DEBUG_ANALYTICS = is_env_true("DEBUG_ANALYTICS")
 # whether to log fine-grained debugging information for the handler chain
 DEBUG_HANDLER_CHAIN = is_env_true("DEBUG_HANDLER_CHAIN")
 
+# request persistence / replay controls (experimental)
+REQUEST_PERSISTENCE_MODE = (
+    os.environ.get("LS_REQUEST_PERSISTENCE_MODE", "").strip().lower() or "off"
+)
+REQUEST_PERSISTENCE_PATH = os.environ.get("LS_REQUEST_PERSISTENCE_PATH", "").strip() or None
+
 # whether to eagerly start services
 EAGER_SERVICE_LOADING = is_env_true("EAGER_SERVICE_LOADING")
 
@@ -1370,6 +1376,8 @@ CONFIG_ENV_VARS = [
     "LOCALSTACK_RESPONSE_HEADER_ENABLED",
     "LOG_LICENSE_ISSUES",
     "LS_LOG",
+    "LS_REQUEST_PERSISTENCE_MODE",
+    "LS_REQUEST_PERSISTENCE_PATH",
     "MAIN_CONTAINER_NAME",
     "MAIN_DOCKER_NETWORK",
     "OPENAPI_VALIDATE_REQUEST",
